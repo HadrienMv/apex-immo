@@ -119,6 +119,7 @@ def _search_via_playwright(max_prix: int = 150000, min_surface: int = 50) -> lis
                 locale="fr-FR",
                 viewport={"width": 1920, "height": 1080},
                 java_script_enabled=True,
+                ignore_https_errors=True,
             )
 
             # Remove webdriver flag
