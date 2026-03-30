@@ -138,6 +138,10 @@ _geo_txn_cache: dict[str, list] = {}
 
 def enrich_and_score(bien: dict, use_geo: bool = True) -> dict:
     """Enrichit un bien avec DVF (fin si possible) et calcule le score."""
+    # Skip scoring for past auctions (reference only)
+    if bien.get("verdict") == "reference_passee":
+        return bien
+
     code_insee = resolve_code_insee(bien)
     bien["code_insee"] = code_insee
 
@@ -274,9 +278,18 @@ def scrape_all_sources(max_prix: int = 150000, min_surface: int = 50) -> list[di
     # Enchères publiques (ventes judiciaires)
     print("  [Enchères judiciaires]...")
     try:
-        ench = fetch_encheres(place="indre")
-        all_biens.extend(ench)
-        print(f"    → {len(ench)} lots")
+        from scraper.encheres import fetch_upcoming, fetch_past
+        upcoming = fetch_upcoming(place="indre")
+        all_biens.extend(upcoming)
+        print(f"    → {len(upcoming)} lots à venir (scorés)")
+
+        # Passées = référence uniquement, on les stocke mais ne les score pas
+        past = fetch_past(place="indre")
+        for b in past:
+            b["statut"] = "vendu"
+            b["verdict"] = "reference_passee"
+        all_biens.extend(past)
+        print(f"    + {len(past)} lots passés (référence)")
     except Exception as e:
         print(f"    ✗ Erreur: {e}")
 
