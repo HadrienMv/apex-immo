@@ -1,9 +1,10 @@
 """
 LeBonCoin scraper — Bright Data Web Unlocker API.
 
-Stratégie : tranches de prix de 5000€ pour couvrir toutes les annonces.
-Chaque requête passe par une IP résidentielle différente (Bright Data).
-10 retries par tranche avec rotation d'IP automatique.
+Stratégie : tranches de prix avec dichotomie automatique.
+Si une tranche retourne 35+ résultats → on la split en deux.
+Les tranches échouées sont retentées à la fin.
+Max budget: 100k€.
 """
 import json
 import os
@@ -28,79 +29,61 @@ LBC_BASE = (
     "&sort=time&order=desc"
 )
 
-# Tranches de 5000€ de 0 à 300k+
-TRANCHES = []
-for start in range(0, 300000, 5000):
-    end = start + 5000
-    TRANCHES.append((f"{start//1000}-{end//1000}k", f"{start}-{end}"))
-TRANCHES.append(("300k+", "300000-max"))
+PAGE_SIZE = 35  # LBC returns ~35 ads per page
 
 
-def _fetch_page(url: str, max_retries: int = 10) -> str | None:
-    """Fetch une page LBC via Bright Data. Retry jusqu'à 10x (IP différente à chaque fois)."""
+def _fetch_page(url: str) -> str | None:
+    """Fetch une page LBC via Bright Data. Single attempt."""
     if not BRIGHTDATA_KEY:
         print("    BRIGHTDATA_KEY not set")
         return None
 
-    for attempt in range(max_retries):
-        try:
-            resp = httpx.post(
-                BRIGHTDATA_API,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {BRIGHTDATA_KEY}",
-                },
-                json={
-                    "zone": BRIGHTDATA_ZONE,
-                    "url": url,
-                    "format": "raw",
-                },
-                timeout=90,
-            )
-            if resp.status_code == 200 and len(resp.text) > 10000:
-                return resp.text
-            elif resp.status_code == 200:
-                if attempt < 3:  # Log seulement les premiers
-                    print(f"      retry {attempt+1}/{max_retries} (empty response)")
-            else:
-                if attempt < 3:
-                    print(f"      retry {attempt+1}/{max_retries} (HTTP {resp.status_code})")
-        except Exception as e:
-            if attempt < 3:
-                print(f"      retry {attempt+1}/{max_retries} ({type(e).__name__})")
-        time.sleep(2)
-
-    return None
+    try:
+        resp = httpx.post(
+            BRIGHTDATA_API,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BRIGHTDATA_KEY}",
+            },
+            json={
+                "zone": BRIGHTDATA_ZONE,
+                "url": url,
+                "format": "raw",
+            },
+            timeout=90,
+        )
+        if resp.status_code == 200 and len(resp.text) > 10000:
+            return resp.text
+        return None
+    except Exception:
+        return None
 
 
 def _parse_html(html: str) -> list[dict]:
-    """Parse le HTML LBC — extrait les annonces depuis __NEXT_DATA__."""
+    """Parse le HTML LBC."""
     biens = []
 
     # __NEXT_DATA__
     start_marker = '<script id="__NEXT_DATA__" type="application/json">'
-    end_marker = '</script>'
     start_idx = html.find(start_marker)
     if start_idx != -1:
         start_idx += len(start_marker)
-        end_idx = html.find(end_marker, start_idx)
+        end_idx = html.find('</script>', start_idx)
         if end_idx != -1:
             try:
                 data = json.loads(html[start_idx:end_idx])
-                ads = _extract_ads(data)
-                for ad in ads:
+                for ad in _extract_ads(data):
                     bien = _parse_ad(ad)
                     if bien:
                         biens.append(bien)
             except json.JSONDecodeError:
                 pass
 
-    # Fallback: regex sur le HTML brut pour extraire les ads JSON
+    # Fallback: regex
     if not biens and '"ads"' in html:
         for match in re.finditer(r'"ads"\s*:\s*(\[.*?\])\s*[,}]', html, re.DOTALL):
             try:
-                ads = json.loads(match.group(1))
-                for ad in ads:
+                for ad in json.loads(match.group(1)):
                     bien = _parse_ad(ad)
                     if bien:
                         biens.append(bien)
@@ -111,6 +94,119 @@ def _parse_html(html: str) -> list[dict]:
 
     return biens
 
+
+def _fetch_tranche(price_min: int, price_max: int | None) -> tuple[list[dict], bool]:
+    """
+    Fetch une tranche de prix.
+    Returns (biens, success).
+    """
+    if price_max:
+        price_str = f"{price_min}-{price_max}"
+        label = f"{price_min//1000}k-{price_max//1000}k"
+    else:
+        price_str = f"{price_min}-max"
+        label = f"{price_min//1000}k+"
+
+    url = f"{LBC_BASE}&price={price_str}"
+    html = _fetch_page(url)
+
+    if not html:
+        return [], False
+
+    biens = _parse_html(html)
+    return biens, True
+
+
+def search_distressed(**kwargs) -> list[dict]:
+    """
+    Scrape LBC avec dichotomie automatique.
+    - Tranches initiales de 10k€ de 0 à 100k
+    - Si une tranche a 35+ résultats → split en deux sous-tranches
+    - Les échecs sont retentés à la fin (max 3 passes)
+    """
+    all_biens = []
+    seen_urls = set()
+
+    # File de tranches à traiter: (min, max, depth)
+    queue = []
+    for start in range(0, 100000, 10000):
+        queue.append((start, start + 10000, 0))
+
+    failed = []
+    pass_num = 1
+
+    while queue and pass_num <= 3:
+        if pass_num > 1:
+            print(f"\n    === Passe {pass_num}: {len(queue)} tranches à retenter ===")
+
+        next_failed = []
+
+        for price_min, price_max, depth in queue:
+            label = f"{price_min//1000}k-{price_max//1000}k"
+            indent = "  " * depth
+            print(f"    {indent}[{label}]", end=" ", flush=True)
+
+            biens, success = _fetch_tranche(price_min, price_max)
+
+            if not success:
+                print("✗ (retry later)")
+                next_failed.append((price_min, price_max, depth))
+                time.sleep(1)
+                continue
+
+            # Déduplicate au fur et à mesure
+            new_biens = []
+            for b in biens:
+                url = b.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    new_biens.append(b)
+
+            if len(biens) >= PAGE_SIZE and (price_max - price_min) > 1000:
+                # Tranche pleine → dichotomiser
+                mid = (price_min + price_max) // 2
+                print(f"FULL ({len(biens)} ads) → split [{price_min//1000}k-{mid//1000}k] + [{mid//1000}k-{price_max//1000}k]")
+                queue_insert = [
+                    (price_min, mid, depth + 1),
+                    (mid, price_max, depth + 1),
+                ]
+                # Insérer juste après la position courante
+                idx = queue.index((price_min, price_max, depth))
+                for i, item in enumerate(queue_insert):
+                    queue.insert(idx + 1 + i, item)
+                # On garde quand même les biens déjà récupérés
+                all_biens.extend(new_biens)
+            elif new_biens:
+                all_biens.extend(new_biens)
+                print(f"+{len(new_biens)} new ({len(all_biens)} total)")
+            else:
+                print(f"0 ads")
+
+            time.sleep(1)  # Throttle
+
+        queue = next_failed
+        pass_num += 1
+
+    if queue:
+        print(f"\n    {len(queue)} tranches encore en échec après 3 passes")
+
+    # Déduplicate final
+    seen = set()
+    unique = []
+    for b in all_biens:
+        key = b.get("url", "")
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(b)
+
+    return unique
+
+
+def search_biens(**kwargs) -> list[dict]:
+    return search_distressed(**kwargs)
+
+
+# ===== Parsers =====
 
 def _parse_ad(ad: dict) -> dict | None:
     attrs = {}
@@ -165,57 +261,10 @@ def _extract_ads(obj) -> list[dict]:
     return ads
 
 
-def search_distressed(**kwargs) -> list[dict]:
-    """Scrape LBC par tranches de 5000€."""
-    all_biens = []
-    empty_streak = 0
-
-    for label, price_range in TRANCHES:
-        url = f"{LBC_BASE}&price={price_range}"
-        print(f"    [{label}]", end=" ", flush=True)
-
-        html = _fetch_page(url)
-        if not html:
-            print("✗")
-            empty_streak += 1
-            if empty_streak >= 5:
-                print(f"    5 échecs consécutifs après {label}, arrêt")
-                break
-            continue
-
-        biens = _parse_html(html)
-        if biens:
-            all_biens.extend(biens)
-            empty_streak = 0
-            print(f"+{len(biens)} ({len(all_biens)} total)")
-        else:
-            # HTML reçu mais pas d'annonces — tranche vide ou parsing raté
-            has_ads = '"ads"' in html
-            print(f"0 (HTML:{len(html)//1000}k, ads:{has_ads})")
-            # Ne compte pas comme échec si on a du HTML
-            if len(html) < 50000:
-                empty_streak += 1
-
-    # Déduplicate
-    seen = set()
-    unique = []
-    for b in all_biens:
-        key = b.get("url", "")
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(b)
-
-    return unique
-
-
-def search_biens(**kwargs) -> list[dict]:
-    return search_distressed(**kwargs)
-
-
 if __name__ == "__main__":
-    print("=== Recherche LeBonCoin (Bright Data, tranches 5k€) ===")
+    print("=== LeBonCoin (Bright Data, dichotomie auto) ===")
     biens = search_distressed()
-    print(f"\n{len(biens)} biens uniques trouvés")
+    print(f"\n{len(biens)} biens uniques")
     for b in biens[:20]:
         prix = b.get("prix", 0) or 0
         surf = b.get("surface_bati") or "?"
