@@ -1,273 +1,129 @@
 """
-LeBonCoin scraper — multi-stratégie.
+LeBonCoin scraper — via Bright Data Web Unlocker API.
 
-Stratégie 1: curl_cffi (impersonne le TLS fingerprint Chrome)
-Stratégie 2: Playwright + stealth
-Stratégie 3: Fallback DOM scraping
+Le Web Unlocker gère automatiquement le bypass des protections anti-bot.
+On récupère le HTML de la page de résultats et on parse les données.
 """
 import json
 import os
 import re
+import httpx
 from datetime import datetime
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
-PROXY_URL = os.getenv("PROXY_URL", "")
+load_dotenv()
 
-# ===== Stratégie 1: curl_cffi (TLS fingerprint impersonation) =====
+BRIGHTDATA_API = "https://api.brightdata.com/request"
+BRIGHTDATA_KEY = os.getenv("BRIGHTDATA_KEY", "")
+BRIGHTDATA_ZONE = os.getenv("BRIGHTDATA_ZONE", "apexlbc")
 
-def _search_via_curl_cffi(
-    max_prix: int = 150000,
-    min_surface: int = 50,
-    keywords: list[str] | None = None,
-    limit: int = 50,
-) -> list[dict]:
-    """Recherche LBC via curl_cffi qui impersonne le fingerprint TLS de Chrome."""
-    try:
-        from curl_cffi import requests as curl_requests
-    except ImportError:
-        print("    curl_cffi not installed, skipping. Run: pip install curl_cffi")
-        return []
+LBC_BASE = "https://www.leboncoin.fr/recherche"
 
-    payload = {
-        "limit": limit,
-        "limit_alu": 0,
-        "filters": {
-            "category": {"id": "9"},
-            "enums": {
-                "real_estate_type": ["1", "2"],
-                "ad_type": ["offer"],
-            },
-            "location": {"departments": ["36"]},
-            "ranges": {
-                "price": {"min": 10000, "max": max_prix},
-                "square": {"min": min_surface},
-            },
-        },
-        "sort_by": "time",
-        "sort_order": "desc",
-    }
 
-    if keywords:
-        payload["filters"]["keywords"] = {"text": " ".join(keywords)}
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Origin": "https://www.leboncoin.fr",
-        "Referer": "https://www.leboncoin.fr/recherche?category=9&locations=d_36",
-        "api_key": "ba0c2dad52b3ec",
-    }
-
-    proxies = {"https": PROXY_URL, "http": PROXY_URL} if PROXY_URL else None
+def _fetch_lbc_page(url: str) -> str | None:
+    """Fetch une page LBC via Bright Data Web Unlocker."""
+    if not BRIGHTDATA_KEY:
+        print("    BRIGHTDATA_KEY not set, skipping LBC")
+        return None
 
     try:
-        resp = curl_requests.post(
-            "https://api.leboncoin.fr/finder/search",
-            json=payload,
-            headers=headers,
-            impersonate="chrome",
-            proxies=proxies,
-            timeout=30,
-            verify=False,
+        resp = httpx.post(
+            BRIGHTDATA_API,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BRIGHTDATA_KEY}",
+            },
+            json={
+                "zone": BRIGHTDATA_ZONE,
+                "url": url,
+                "format": "raw",
+            },
+            timeout=60,
         )
-        if resp.status_code != 200:
-            print(f"    curl_cffi: HTTP {resp.status_code}")
-            return []
-        data = resp.json()
+        if resp.status_code == 200:
+            return resp.text
+        else:
+            print(f"    Bright Data HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
     except Exception as e:
-        print(f"    curl_cffi error: {e}")
-        return []
-
-    return [b for b in (_parse_ad(ad) for ad in data.get("ads", [])) if b]
+        print(f"    Bright Data error: {e}")
+        return None
 
 
-# ===== Stratégie 2: Playwright stealth =====
-
-def _search_via_playwright(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
-    """Recherche LBC via Playwright avec anti-détection."""
-    try:
-        import asyncio
-        from playwright.async_api import async_playwright
-    except ImportError:
-        print("    playwright not installed, skipping")
-        return []
-
-    async def _scrape():
-        biens = []
-        async with async_playwright() as p:
-            # Parse proxy for Playwright
-            pw_proxy = None
-            if PROXY_URL:
-                from urllib.parse import urlparse
-                parsed = urlparse(PROXY_URL)
-                pw_proxy = {
-                    "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-                    "username": parsed.username or "",
-                    "password": parsed.password or "",
-                }
-
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=pw_proxy,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                    "--no-sandbox",
-                ],
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale="fr-FR",
-                viewport={"width": 1920, "height": 1080},
-                java_script_enabled=True,
-                ignore_https_errors=True,
-            )
-
-            # Remove webdriver flag
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['fr-FR', 'fr', 'en']});
-                window.chrome = {runtime: {}};
-            """)
-
-            page = await context.new_page()
-
-            # Intercepter les réponses API
-            api_data = []
-            async def handle_response(response):
-                if "finder/search" in response.url or "api.leboncoin.fr" in response.url:
-                    try:
-                        data = await response.json()
-                        api_data.append(data)
-                    except Exception:
-                        pass
-            page.on("response", handle_response)
-
-            url = f"https://www.leboncoin.fr/recherche?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&sort=time"
-
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Wait for content to load
-                await page.wait_for_timeout(5000)
-
-                # Try to accept cookies if popup appears
-                try:
-                    accept_btn = await page.query_selector('button[id*="accept"], button[class*="accept"], #didomi-notice-agree-button')
-                    if accept_btn:
-                        await accept_btn.click()
-                        await page.wait_for_timeout(2000)
-                except Exception:
-                    pass
-
-                # Method 1: intercepted API data
-                for data in api_data:
-                    for ad in data.get("ads", []):
-                        bien = _parse_ad(ad)
-                        if bien:
-                            biens.append(bien)
-
-                # Method 2: __NEXT_DATA__
-                if not biens:
-                    content = await page.content()
-                    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', content, re.DOTALL)
-                    if match:
-                        try:
-                            next_data = json.loads(match.group(1))
-                            ads = _extract_ads_recursive(next_data)
-                            for ad in ads:
-                                bien = _parse_ad(ad)
-                                if bien:
-                                    biens.append(bien)
-                        except json.JSONDecodeError:
-                            pass
-
-                # Method 3: DOM scraping
-                if not biens:
-                    cards = await page.query_selector_all('a[data-qa-id="aditem_container"], a[href*="/ad/ventes_immobilieres/"]')
-                    for card in cards[:50]:
-                        try:
-                            titre_el = await card.query_selector('[data-qa-id="aditem_title"], h2')
-                            prix_el = await card.query_selector('[data-qa-id="aditem_price"], [class*="Price"]')
-                            loc_el = await card.query_selector('[data-qa-id="aditem_location"]')
-                            link = await card.get_attribute("href") or ""
-
-                            titre_text = await titre_el.inner_text() if titre_el else ""
-                            prix_text = await prix_el.inner_text() if prix_el else ""
-                            loc_text = await loc_el.inner_text() if loc_el else ""
-
-                            prix_match = re.search(r"([\d\s]+)\s*€", prix_text.replace("\xa0", " "))
-                            prix = float(prix_match.group(1).replace(" ", "")) if prix_match else None
-
-                            if titre_text and prix:
-                                biens.append({
-                                    "source": "leboncoin",
-                                    "url": f"https://www.leboncoin.fr{link}" if link.startswith("/") else link,
-                                    "titre": titre_text.strip(),
-                                    "prix": prix,
-                                    "commune": loc_text.strip(),
-                                    "premiere_vue": datetime.now().isoformat(),
-                                })
-                        except Exception:
-                            continue
-
-            except Exception as e:
-                print(f"    Playwright page error: {e}")
-
-            await browser.close()
-
-        return biens
-
-    import asyncio
-    return asyncio.run(_scrape())
-
-
-# ===== Stratégie 3: Scrape via Google cache =====
-
-def _search_via_google(max_prix: int = 150000) -> list[dict]:
-    """Recherche LBC via Google index (pas bloqué)."""
-    try:
-        import httpx
-        from bs4 import BeautifulSoup
-    except ImportError:
-        return []
-
+def _parse_lbc_html(html: str) -> list[dict]:
+    """Parse le HTML LBC pour extraire les annonces."""
     biens = []
-    queries = [
-        f"site:leboncoin.fr ventes_immobilieres indre maison",
-        f"site:leboncoin.fr ventes_immobilieres 36000 maison",
-    ]
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-    }
+    # Méthode 1: Extraire depuis __NEXT_DATA__
+    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if match:
+        try:
+            next_data = json.loads(match.group(1))
+            ads = _extract_ads_recursive(next_data)
+            for ad in ads:
+                bien = _parse_ad(ad)
+                if bien:
+                    biens.append(bien)
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"    __NEXT_DATA__ parse error: {e}")
 
-    import time
-    with httpx.Client(timeout=10, follow_redirects=True) as client:
-        for query in queries:
-            try:
-                resp = client.get("https://www.google.com/search", params={"q": query, "num": 20, "hl": "fr"}, headers=headers)
-                if resp.status_code != 200:
-                    continue
-                soup = BeautifulSoup(resp.text, "lxml")
-                for a in soup.select("a[href*='leboncoin.fr/ad/']"):
-                    href = a.get("href", "")
-                    title = a.get_text(strip=True)
-                    if title and href:
-                        biens.append({
-                            "source": "leboncoin",
-                            "url": href,
-                            "titre": title[:100],
-                            "premiere_vue": datetime.now().isoformat(),
-                        })
-                time.sleep(2)
-            except Exception:
-                continue
+    # Méthode 2: Parse le HTML directement
+    if not biens:
+        soup = BeautifulSoup(html, "lxml")
+
+        # Chercher les scripts contenant des données d'annonces
+        for script in soup.find_all("script"):
+            text = script.string or ""
+            if '"ads"' in text and '"list_id"' in text:
+                # Trouver le JSON dans le script
+                for m in re.finditer(r'\{[^{}]*"ads"\s*:\s*\[.*?\][^{}]*\}', text, re.DOTALL):
+                    try:
+                        data = json.loads(m.group())
+                        for ad in data.get("ads", []):
+                            bien = _parse_ad(ad)
+                            if bien:
+                                biens.append(bien)
+                    except json.JSONDecodeError:
+                        continue
+
+    # Méthode 3: Extraire les liens et infos basiques du DOM
+    if not biens:
+        soup = BeautifulSoup(html, "lxml") if not biens else soup
+        for link in soup.select('a[href*="/ad/ventes_immobilieres/"], a[data-qa-id="aditem_container"]'):
+            href = link.get("href", "")
+            title_el = link.select_one('[data-qa-id="aditem_title"], h2, [class*="title"]')
+            price_el = link.select_one('[data-qa-id="aditem_price"], [class*="rice"]')
+            loc_el = link.select_one('[data-qa-id="aditem_location"], [class*="ocation"]')
+
+            title = title_el.get_text(strip=True) if title_el else ""
+            price_text = price_el.get_text(strip=True) if price_el else ""
+            location = loc_el.get_text(strip=True) if loc_el else ""
+
+            prix_match = re.search(r"([\d\s\xa0]+)\s*€", price_text)
+            prix = float(prix_match.group(1).replace(" ", "").replace("\xa0", "")) if prix_match else None
+
+            # Extraire surface du titre
+            surface = None
+            surf_match = re.search(r"(\d+)\s*m[²2]", title + " " + price_text)
+            if surf_match:
+                surface = float(surf_match.group(1))
+
+            if title and (prix or href):
+                url = f"https://www.leboncoin.fr{href}" if href.startswith("/") else href
+                biens.append({
+                    "source": "leboncoin",
+                    "url": url,
+                    "titre": title,
+                    "prix": prix,
+                    "surface_bati": surface,
+                    "commune": location,
+                    "premiere_vue": datetime.now().isoformat(),
+                    "prix_m2": round(prix / surface, 2) if prix and surface and surface > 0 else None,
+                })
 
     return biens
 
-
-# ===== Parser commun =====
 
 def _parse_ad(ad: dict) -> dict | None:
     """Parse une annonce LBC depuis le JSON API."""
@@ -323,52 +179,44 @@ def _extract_ads_recursive(obj) -> list[dict]:
     return ads
 
 
-# ===== Interface principale =====
-
 def search_biens(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
-    """Recherche LBC — essaie les stratégies dans l'ordre."""
-    # Stratégie 1: curl_cffi
-    print("    [LBC] Stratégie 1: curl_cffi...")
-    biens = _search_via_curl_cffi(max_prix=max_prix, min_surface=min_surface)
-    if biens:
-        print(f"    [LBC] curl_cffi: {len(biens)} annonces ✓")
-        return biens
+    """Recherche LBC via Bright Data Web Unlocker."""
+    url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&sort=time"
 
-    # Stratégie 2: Playwright stealth
-    print("    [LBC] Stratégie 2: Playwright stealth...")
-    biens = _search_via_playwright(max_prix=max_prix, min_surface=min_surface)
-    if biens:
-        print(f"    [LBC] Playwright: {len(biens)} annonces ✓")
-        return biens
+    print(f"    Fetching LBC via Bright Data...")
+    html = _fetch_lbc_page(url)
+    if not html:
+        return []
 
-    # Stratégie 3: Google
-    print("    [LBC] Stratégie 3: Google index...")
-    biens = _search_via_google(max_prix=max_prix)
-    if biens:
-        print(f"    [LBC] Google: {len(biens)} annonces ✓")
-        return biens
+    biens = _parse_lbc_html(html)
+    print(f"    Parsed {len(biens)} annonces from page 1")
 
-    print("    [LBC] Aucune stratégie n'a fonctionné")
-    return []
+    # Page 2
+    html2 = _fetch_lbc_page(url + "&page=2")
+    if html2:
+        biens2 = _parse_lbc_html(html2)
+        biens.extend(biens2)
+        print(f"    Parsed {len(biens2)} annonces from page 2")
+
+    return biens
 
 
 def search_distressed(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
-    """Recherche biens en détresse — essaie curl_cffi avec mots-clés."""
+    """Recherche biens en détresse."""
     all_biens = []
 
     # Recherche générale
     all_biens.extend(search_biens(max_prix=max_prix, min_surface=min_surface))
 
-    # Recherches ciblées (seulement si curl_cffi a marché)
-    try:
-        from curl_cffi import requests as curl_requests
-        for kw in ["succession", "urgent", "travaux", "rénover"]:
-            biens = _search_via_curl_cffi(max_prix=max_prix, min_surface=min_surface, keywords=[kw])
-            if biens:
-                all_biens.extend(biens)
-                print(f"    [LBC] +{len(biens)} pour '{kw}'")
-    except ImportError:
-        pass
+    # Recherches avec mots-clés
+    for kw in ["succession", "travaux"]:
+        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&text={kw}"
+        print(f"    Fetching LBC '{kw}'...")
+        html = _fetch_lbc_page(url)
+        if html:
+            biens = _parse_lbc_html(html)
+            all_biens.extend(biens)
+            print(f"    +{len(biens)} pour '{kw}'")
 
     # Déduplicate
     seen = set()
@@ -383,10 +231,10 @@ def search_distressed(max_prix: int = 150000, min_surface: int = 50) -> list[dic
 
 
 if __name__ == "__main__":
-    print("=== Recherche LeBonCoin 36 ===")
+    print("=== Recherche LeBonCoin 36 (Bright Data) ===")
     biens = search_distressed()
     print(f"\n{len(biens)} biens uniques trouvés")
-    for b in biens[:10]:
+    for b in biens[:15]:
         prix = b.get("prix", 0) or 0
         surf = b.get("surface_bati") or "?"
         print(f"  {prix:>10,.0f}€  {surf:>5}m²  {b.get('commune', ''):20s}  {b.get('titre', '')[:60]}")
