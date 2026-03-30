@@ -204,7 +204,7 @@ def search_distressed(max_prix: int = 300000, min_surface: int = 0) -> list[dict
 
     # Toutes les annonces, paginées (5 pages = ~175 annonces)
     for page in range(1, 6):
-        url = LBC_SEARCH + "&sort=time"
+        url = LBC_SEARCH + "&sort=time&order=desc"
         if page > 1:
             url += f"&page={page}"
         print(f"    Fetching LBC page {page}...")
