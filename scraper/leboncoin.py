@@ -206,29 +206,29 @@ def search_distressed(max_prix: int = 300000, min_surface: int = 0) -> list[dict
     """Récupère TOUTES les annonces du 36, le scoring se fait après."""
     all_biens = []
 
-    # Paginer (10 pages max, stop après 2 échecs consécutifs)
-    consecutive_fails = 0
-    for page in range(1, 11):
-        url = LBC_SEARCH + "&sort=time&order=desc"
-        if page > 1:
-            url += f"&page={page}"
-        print(f"    Fetching LBC page {page}...")
+    # Stratégie : tranches de prix pour contourner le blocage de pagination
+    # Chaque tranche = 1 requête page 1 (~35 annonces)
+    tranches = [
+        ("0-30000", "price=min-30000"),
+        ("30000-60000", "price=30000-60000"),
+        ("60000-100000", "price=60000-100000"),
+        ("100000-150000", "price=100000-150000"),
+        ("150000-250000", "price=150000-250000"),
+        ("250000+", "price=250000-max"),
+    ]
+
+    for label, price_filter in tranches:
+        url = LBC_SEARCH + f"&{price_filter}&sort=time&order=desc"
+        print(f"    Fetching LBC {label}€...")
         html = _fetch_lbc_page(url)
         if not html:
-            consecutive_fails += 1
-            if consecutive_fails >= 2:
-                print(f"    2 échecs consécutifs, arrêt pagination")
-                break
             continue
         biens = _parse_lbc_html(html)
-        if not biens:
-            consecutive_fails += 1
-            if consecutive_fails >= 2:
-                break
-            continue
-        consecutive_fails = 0
-        all_biens.extend(biens)
-        print(f"    +{len(biens)} annonces (total: {len(all_biens)})")
+        if biens:
+            all_biens.extend(biens)
+            print(f"    +{len(biens)} annonces (total: {len(all_biens)})")
+        else:
+            print(f"    0 annonces pour {label}€")
 
     # Déduplicate
     seen = set()
