@@ -1,22 +1,25 @@
 """
-LeBonCoin scraper — Playwright direct (pas de Bright Data API).
+LeBonCoin scraper — Bright Data Web Unlocker API.
 
-Ouvre un vrai navigateur, accepte les cookies, scroll, pagine,
-et extrait les données du DOM ou du __NEXT_DATA__.
+Stratégie : tranches de prix de 5000€ pour couvrir toutes les annonces.
+Chaque requête passe par une IP résidentielle différente (Bright Data).
+10 retries par tranche avec rotation d'IP automatique.
 """
-import asyncio
 import json
 import os
 import re
 import time
+import httpx
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
-PROXY_URL = os.getenv("PROXY_URL", "")
+BRIGHTDATA_API = "https://api.brightdata.com/request"
+BRIGHTDATA_KEY = os.getenv("BRIGHTDATA_KEY", "")
+BRIGHTDATA_ZONE = os.getenv("BRIGHTDATA_ZONE", "apexlbc")
 
-LBC_URL = (
+LBC_BASE = (
     "https://www.leboncoin.fr/recherche"
     "?category=9"
     "&locations=Ch%C3%A2teauroux_36000__46.8126_1.69694_5000_30000"
@@ -25,229 +28,91 @@ LBC_URL = (
     "&sort=time&order=desc"
 )
 
-
-async def _create_browser():
-    """Crée un browser Playwright avec anti-détection."""
-    from playwright.async_api import async_playwright
-
-    p = await async_playwright().__aenter__()
-
-    # Proxy Bright Data résidentiel si dispo
-    pw_proxy = None
-    if PROXY_URL:
-        from urllib.parse import urlparse
-        parsed = urlparse(PROXY_URL)
-        pw_proxy = {
-            "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-            "username": parsed.username or "",
-            "password": parsed.password or "",
-        }
-
-    browser = await p.chromium.launch(
-        headless=True,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-        ],
-        proxy=pw_proxy,
-    )
-
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        locale="fr-FR",
-        viewport={"width": 1920, "height": 1080},
-        ignore_https_errors=True,
-    )
-
-    # Anti-détection
-    await context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        Object.defineProperty(navigator, 'languages', {get: () => ['fr-FR', 'fr', 'en']});
-        window.chrome = {runtime: {}};
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) =>
-            parameters.name === 'notifications' ?
-            Promise.resolve({state: Notification.permission}) :
-            originalQuery(parameters);
-    """)
-
-    return p, browser, context
+# Tranches de 5000€ de 0 à 300k+
+TRANCHES = []
+for start in range(0, 300000, 5000):
+    end = start + 5000
+    TRANCHES.append((f"{start//1000}-{end//1000}k", f"{start}-{end}"))
+TRANCHES.append(("300k+", "300000-max"))
 
 
-async def _accept_cookies(page):
-    """Accepte les cookies LBC."""
-    try:
-        for selector in [
-            '#didomi-notice-agree-button',
-            'button[aria-label*="accepter"]',
-            'button[aria-label*="Accept"]',
-            '#footer_tc_privacy_button_2',
-            'button:has-text("Accepter")',
-            'button:has-text("Tout accepter")',
-        ]:
-            btn = await page.query_selector(selector)
-            if btn:
-                await btn.click()
-                await page.wait_for_timeout(1000)
-                print("      Cookies acceptés")
-                return
-    except Exception:
-        pass
+def _fetch_page(url: str, max_retries: int = 10) -> str | None:
+    """Fetch une page LBC via Bright Data. Retry jusqu'à 10x (IP différente à chaque fois)."""
+    if not BRIGHTDATA_KEY:
+        print("    BRIGHTDATA_KEY not set")
+        return None
+
+    for attempt in range(max_retries):
+        try:
+            resp = httpx.post(
+                BRIGHTDATA_API,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {BRIGHTDATA_KEY}",
+                },
+                json={
+                    "zone": BRIGHTDATA_ZONE,
+                    "url": url,
+                    "format": "raw",
+                },
+                timeout=90,
+            )
+            if resp.status_code == 200 and len(resp.text) > 10000:
+                return resp.text
+            elif resp.status_code == 200:
+                if attempt < 3:  # Log seulement les premiers
+                    print(f"      retry {attempt+1}/{max_retries} (empty response)")
+            else:
+                if attempt < 3:
+                    print(f"      retry {attempt+1}/{max_retries} (HTTP {resp.status_code})")
+        except Exception as e:
+            if attempt < 3:
+                print(f"      retry {attempt+1}/{max_retries} ({type(e).__name__})")
+        time.sleep(2)
+
+    return None
 
 
-async def _scrape_page(page) -> list[dict]:
-    """Extrait les annonces de la page courante."""
+def _parse_html(html: str) -> list[dict]:
+    """Parse le HTML LBC — extrait les annonces depuis __NEXT_DATA__."""
     biens = []
 
-    # Attendre que le contenu charge
-    await page.wait_for_timeout(3000)
-
-    # Méthode 1: __NEXT_DATA__
-    try:
-        next_data_el = await page.query_selector('script#__NEXT_DATA__')
-        if next_data_el:
-            json_text = await next_data_el.inner_text()
-            data = json.loads(json_text)
-            ads = _extract_ads_recursive(data)
-            for ad in ads:
-                bien = _parse_ad(ad)
-                if bien:
-                    biens.append(bien)
-            if biens:
-                return biens
-    except Exception as e:
-        print(f"      __NEXT_DATA__ error: {e}")
-
-    # Méthode 2: DOM scraping
-    try:
-        # Scroll pour charger toutes les annonces
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await page.wait_for_timeout(500)
-
-        cards = await page.query_selector_all(
-            'a[data-qa-id="aditem_container"], '
-            'a[href*="/ad/ventes_immobilieres/"], '
-            'a[href*="/ad/locations/"], '
-            '[data-test-id="ad"]'
-        )
-
-        for card in cards:
+    # __NEXT_DATA__
+    start_marker = '<script id="__NEXT_DATA__" type="application/json">'
+    end_marker = '</script>'
+    start_idx = html.find(start_marker)
+    if start_idx != -1:
+        start_idx += len(start_marker)
+        end_idx = html.find(end_marker, start_idx)
+        if end_idx != -1:
             try:
-                href = await card.get_attribute("href") or ""
-                if not href or "depot" in href:
-                    continue
+                data = json.loads(html[start_idx:end_idx])
+                ads = _extract_ads(data)
+                for ad in ads:
+                    bien = _parse_ad(ad)
+                    if bien:
+                        biens.append(bien)
+            except json.JSONDecodeError:
+                pass
 
-                text = await card.inner_text()
-                lines = [l.strip() for l in text.split("\n") if l.strip()]
-
-                titre = lines[0] if lines else ""
-                prix = None
-                surface = None
-                commune = ""
-
-                for line in lines:
-                    if not prix:
-                        m = re.search(r"([\d\s\xa0]+)\s*€", line)
-                        if m:
-                            prix = float(re.sub(r'[^\d]', '', m.group(1)))
-                    if not surface:
-                        m = re.search(r"(\d+)\s*m[²2]", line)
-                        if m:
-                            surface = float(m.group(1))
-                    if not commune and re.match(r"^[A-ZÀ-Ÿ][\w\s-]+\d{5}", line):
-                        commune = line
-
-                if not commune:
-                    for line in lines:
-                        if re.match(r"^[A-ZÀ-Ÿ]", line) and len(line) < 40 and "€" not in line and "m²" not in line:
-                            commune = line
-                            break
-
-                url = f"https://www.leboncoin.fr{href}" if href.startswith("/") else href
-
-                if prix and prix > 100:
-                    biens.append({
-                        "source": "leboncoin",
-                        "url": url,
-                        "titre": titre,
-                        "prix": prix,
-                        "surface_bati": surface,
-                        "commune": commune,
-                        "premiere_vue": datetime.now().isoformat(),
-                        "prix_m2": round(prix / surface, 2) if prix and surface and surface > 0 else None,
-                    })
-            except Exception:
+    # Fallback: regex sur le HTML brut pour extraire les ads JSON
+    if not biens and '"ads"' in html:
+        for match in re.finditer(r'"ads"\s*:\s*(\[.*?\])\s*[,}]', html, re.DOTALL):
+            try:
+                ads = json.loads(match.group(1))
+                for ad in ads:
+                    bien = _parse_ad(ad)
+                    if bien:
+                        biens.append(bien)
+                if biens:
+                    break
+            except json.JSONDecodeError:
                 continue
-    except Exception as e:
-        print(f"      DOM scraping error: {e}")
 
     return biens
 
 
-async def _scrape_all_pages(max_pages: int = 50) -> list[dict]:
-    """Scrape toutes les pages LBC."""
-    all_biens = []
-
-    p, browser, context = await _create_browser()
-    page = await context.new_page()
-
-    try:
-        # Page 1
-        print(f"    Page 1...")
-        await page.goto(LBC_URL, wait_until="domcontentloaded", timeout=30000)
-        await _accept_cookies(page)
-        await page.wait_for_timeout(2000)
-
-        biens = await _scrape_page(page)
-        all_biens.extend(biens)
-        print(f"    +{len(biens)} annonces (total: {len(all_biens)})")
-
-        if not biens:
-            print("    Page 1 vide — arrêt")
-            await browser.close()
-            await p.__aexit__(None, None, None)
-            return all_biens
-
-        # Pages suivantes
-        for page_num in range(2, max_pages + 1):
-            url = LBC_URL + f"&page={page_num}"
-            print(f"    Page {page_num}...")
-
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(2000)
-            except Exception as e:
-                print(f"    Erreur navigation page {page_num}: {e}")
-                break
-
-            biens = await _scrape_page(page)
-            if not biens:
-                print(f"    Page {page_num} vide — fin de pagination")
-                break
-
-            all_biens.extend(biens)
-            print(f"    +{len(biens)} annonces (total: {len(all_biens)})")
-
-            # Pause entre les pages pour éviter le rate limit
-            await page.wait_for_timeout(1500)
-
-    except Exception as e:
-        print(f"    Erreur: {e}")
-    finally:
-        await browser.close()
-        await p.__aexit__(None, None, None)
-
-    return all_biens
-
-
-# ===== Parsers =====
-
 def _parse_ad(ad: dict) -> dict | None:
-    """Parse une annonce LBC depuis le JSON."""
     attrs = {}
     for a in ad.get("attributes", []):
         attrs[a.get("key", "")] = a.get("value", a.get("values", ""))
@@ -287,24 +152,49 @@ def _parse_ad(ad: dict) -> dict | None:
     }
 
 
-def _extract_ads_recursive(obj) -> list[dict]:
+def _extract_ads(obj) -> list[dict]:
     ads = []
     if isinstance(obj, dict):
         if "ads" in obj and isinstance(obj["ads"], list):
             ads.extend(obj["ads"])
         for v in obj.values():
-            ads.extend(_extract_ads_recursive(v))
+            ads.extend(_extract_ads(v))
     elif isinstance(obj, list):
         for item in obj:
-            ads.extend(_extract_ads_recursive(item))
+            ads.extend(_extract_ads(item))
     return ads
 
 
-# ===== Interface =====
-
 def search_distressed(**kwargs) -> list[dict]:
-    """Scrape toutes les annonces LBC."""
-    all_biens = asyncio.run(_scrape_all_pages(max_pages=50))
+    """Scrape LBC par tranches de 5000€."""
+    all_biens = []
+    empty_streak = 0
+
+    for label, price_range in TRANCHES:
+        url = f"{LBC_BASE}&price={price_range}"
+        print(f"    [{label}]", end=" ", flush=True)
+
+        html = _fetch_page(url)
+        if not html:
+            print("✗")
+            empty_streak += 1
+            if empty_streak >= 5:
+                print(f"    5 échecs consécutifs après {label}, arrêt")
+                break
+            continue
+
+        biens = _parse_html(html)
+        if biens:
+            all_biens.extend(biens)
+            empty_streak = 0
+            print(f"+{len(biens)} ({len(all_biens)} total)")
+        else:
+            # HTML reçu mais pas d'annonces — tranche vide ou parsing raté
+            has_ads = '"ads"' in html
+            print(f"0 (HTML:{len(html)//1000}k, ads:{has_ads})")
+            # Ne compte pas comme échec si on a du HTML
+            if len(html) < 50000:
+                empty_streak += 1
 
     # Déduplicate
     seen = set()
@@ -323,10 +213,10 @@ def search_biens(**kwargs) -> list[dict]:
 
 
 if __name__ == "__main__":
-    print("=== Recherche LeBonCoin 36 (Playwright direct) ===")
+    print("=== Recherche LeBonCoin (Bright Data, tranches 5k€) ===")
     biens = search_distressed()
     print(f"\n{len(biens)} biens uniques trouvés")
-    for b in biens[:15]:
+    for b in biens[:20]:
         prix = b.get("prix", 0) or 0
         surf = b.get("surface_bati") or "?"
-        print(f"  {prix:>10,.0f}€  {surf:>5}m²  {b.get('commune', ''):20s}  {b.get('titre', '')[:60]}")
+        print(f"  {prix:>10,.0f}€  {surf:>5}m²  {b.get('commune', ''):20s}  {b.get('titre', '')[:55]}")
