@@ -95,26 +95,35 @@ def _parse_html(html: str) -> list[dict]:
     return biens
 
 
-def _fetch_tranche(price_min: int, price_max: int | None) -> tuple[list[dict], bool]:
+def _fetch_tranche(price_min: int, price_max: int | None) -> tuple[list[dict], bool, bool]:
     """
     Fetch une tranche de prix.
-    Returns (biens, success).
+    Returns (biens, success, got_html).
+    - success=False, got_html=False → network failure
+    - success=True, biens=[] → genuinely empty tranche
+    - success=False, got_html=True → HTML received but parse failed (retry)
     """
     if price_max:
         price_str = f"{price_min}-{price_max}"
-        label = f"{price_min//1000}k-{price_max//1000}k"
     else:
         price_str = f"{price_min}-max"
-        label = f"{price_min//1000}k+"
 
     url = f"{LBC_BASE}&price={price_str}"
     html = _fetch_page(url)
 
     if not html:
-        return [], False
+        return [], False, False
 
     biens = _parse_html(html)
-    return biens, True
+
+    if not biens:
+        # Check if HTML has ads data we failed to parse
+        has_ads = '"ads"' in html and '"list_id"' in html
+        if has_ads:
+            # HTML has ads but parsing failed → treat as failure to retry
+            return [], False, True
+
+    return biens, True, True
 
 
 def search_distressed(**kwargs) -> list[dict]:
@@ -149,10 +158,13 @@ def search_distressed(**kwargs) -> list[dict]:
             indent = "  " * min(depth, 4)
             print(f"    {indent}[{label}]", end=" ", flush=True)
 
-            biens, success = _fetch_tranche(price_min, price_max)
+            biens, success, got_html = _fetch_tranche(price_min, price_max)
 
             if not success:
-                print("✗")
+                if got_html:
+                    print("✗ (parse failed, retry)")
+                else:
+                    print("✗ (network)")
                 next_queue.append((price_min, price_max, depth))
                 time.sleep(1)
                 continue
