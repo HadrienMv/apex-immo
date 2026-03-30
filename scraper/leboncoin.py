@@ -180,54 +180,28 @@ def _extract_ads_recursive(obj) -> list[dict]:
 
 
 def search_biens(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
-    """Recherche LBC via Bright Data Web Unlocker."""
-    url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&sort=time"
-
-    print(f"    Fetching LBC via Bright Data...")
-    html = _fetch_lbc_page(url)
-    if not html:
-        return []
-
-    # Debug: check what we got
-    has_next_data = "__NEXT_DATA__" in html
-    has_ads = '"ads"' in html
-    has_list_id = '"list_id"' in html
-    has_aditem = "aditem" in html.lower() or "ad-card" in html.lower()
-    print(f"    HTML size: {len(html)} chars, __NEXT_DATA__: {has_next_data}, ads: {has_ads}, list_id: {has_list_id}, aditem: {has_aditem}")
-
-    # Dump first page for debug
-    with open("/tmp/lbc_debug.html", "w") as f:
-        f.write(html)
-
-    biens = _parse_lbc_html(html)
-    print(f"    Parsed {len(biens)} annonces from page 1")
-
-    # Page 2
-    html2 = _fetch_lbc_page(url + "&page=2")
-    if html2:
-        biens2 = _parse_lbc_html(html2)
-        biens.extend(biens2)
-        print(f"    Parsed {len(biens2)} annonces from page 2")
-
-    return biens
+    """Alias pour search_distressed."""
+    return search_distressed(max_prix=max_prix, min_surface=min_surface)
 
 
 def search_distressed(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
-    """Recherche biens en détresse."""
+    """Récupère TOUTES les annonces du 36, le scoring se fait après."""
     all_biens = []
 
-    # Recherche générale
-    all_biens.extend(search_biens(max_prix=max_prix, min_surface=min_surface))
-
-    # Recherches avec mots-clés
-    for kw in ["succession", "travaux"]:
-        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&text={kw}"
-        print(f"    Fetching LBC '{kw}'...")
+    # Toutes les annonces, paginées (3 pages max = ~105 annonces)
+    for page in range(1, 4):
+        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&sort=time"
+        if page > 1:
+            url += f"&page={page}"
+        print(f"    Fetching LBC page {page}...")
         html = _fetch_lbc_page(url)
-        if html:
-            biens = _parse_lbc_html(html)
-            all_biens.extend(biens)
-            print(f"    +{len(biens)} pour '{kw}'")
+        if not html:
+            break
+        biens = _parse_lbc_html(html)
+        if not biens:
+            break
+        all_biens.extend(biens)
+        print(f"    +{len(biens)} annonces")
 
     # Déduplicate
     seen = set()
