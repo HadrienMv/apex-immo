@@ -129,32 +129,35 @@ def search_distressed(**kwargs) -> list[dict]:
 
     # File de tranches à traiter: (min, max, depth)
     queue = []
-    for start in range(0, 100000, 10000):
-        queue.append((start, start + 10000, 0))
+    for start in range(0, 100000, 5000):
+        queue.append((start, start + 5000, 0))
 
-    failed = []
     pass_num = 1
 
-    while queue and pass_num <= 3:
+    while queue and pass_num <= 5:
         if pass_num > 1:
-            print(f"\n    === Passe {pass_num}: {len(queue)} tranches à retenter ===")
+            print(f"\n    === Passe {pass_num}: {len(queue)} tranches ===")
 
-        next_failed = []
+        next_queue = []
 
         for price_min, price_max, depth in queue:
-            label = f"{price_min//1000}k-{price_max//1000}k"
-            indent = "  " * depth
+            width = price_max - price_min
+            if width >= 1000:
+                label = f"{price_min//1000}k-{price_max//1000}k"
+            else:
+                label = f"{price_min}-{price_max}"
+            indent = "  " * min(depth, 4)
             print(f"    {indent}[{label}]", end=" ", flush=True)
 
             biens, success = _fetch_tranche(price_min, price_max)
 
             if not success:
-                print("✗ (retry later)")
-                next_failed.append((price_min, price_max, depth))
+                print("✗")
+                next_queue.append((price_min, price_max, depth))
                 time.sleep(1)
                 continue
 
-            # Déduplicate au fur et à mesure
+            # Déduplicate
             new_biens = []
             for b in biens:
                 url = b.get("url", "")
@@ -162,33 +165,27 @@ def search_distressed(**kwargs) -> list[dict]:
                     seen_urls.add(url)
                     new_biens.append(b)
 
-            if len(biens) >= PAGE_SIZE and (price_max - price_min) > 1000:
+            if len(biens) >= PAGE_SIZE and width > 500:
                 # Tranche pleine → dichotomiser
                 mid = (price_min + price_max) // 2
-                print(f"FULL ({len(biens)} ads) → split [{price_min//1000}k-{mid//1000}k] + [{mid//1000}k-{price_max//1000}k]")
-                queue_insert = [
-                    (price_min, mid, depth + 1),
-                    (mid, price_max, depth + 1),
-                ]
-                # Insérer juste après la position courante
-                idx = queue.index((price_min, price_max, depth))
-                for i, item in enumerate(queue_insert):
-                    queue.insert(idx + 1 + i, item)
-                # On garde quand même les biens déjà récupérés
+                print(f"FULL ({len(biens)}) → split")
+                next_queue.append((price_min, mid, depth + 1))
+                next_queue.append((mid, price_max, depth + 1))
+                # Garder les biens récupérés (page 1 de la tranche large)
                 all_biens.extend(new_biens)
             elif new_biens:
                 all_biens.extend(new_biens)
-                print(f"+{len(new_biens)} new ({len(all_biens)} total)")
+                print(f"+{len(new_biens)} ({len(all_biens)} total)")
             else:
-                print(f"0 ads")
+                print(f"0")
 
-            time.sleep(1)  # Throttle
+            time.sleep(1)
 
-        queue = next_failed
+        queue = next_queue
         pass_num += 1
 
     if queue:
-        print(f"\n    {len(queue)} tranches encore en échec après 3 passes")
+        print(f"\n    {len(queue)} tranches non résolues")
 
     # Déduplicate final
     seen = set()
