@@ -6,8 +6,11 @@ Stratégie 2: Playwright + stealth
 Stratégie 3: Fallback DOM scraping
 """
 import json
+import os
 import re
 from datetime import datetime
+
+PROXY_URL = os.getenv("PROXY_URL", "")
 
 # ===== Stratégie 1: curl_cffi (TLS fingerprint impersonation) =====
 
@@ -54,13 +57,17 @@ def _search_via_curl_cffi(
         "api_key": "ba0c2dad52b3ec",
     }
 
+    proxies = {"https": PROXY_URL, "http": PROXY_URL} if PROXY_URL else None
+
     try:
         resp = curl_requests.post(
             "https://api.leboncoin.fr/finder/search",
             json=payload,
             headers=headers,
             impersonate="chrome",
-            timeout=15,
+            proxies=proxies,
+            timeout=30,
+            verify=False,
         )
         if resp.status_code != 200:
             print(f"    curl_cffi: HTTP {resp.status_code}")
@@ -87,8 +94,20 @@ def _search_via_playwright(max_prix: int = 150000, min_surface: int = 50) -> lis
     async def _scrape():
         biens = []
         async with async_playwright() as p:
+            # Parse proxy for Playwright
+            pw_proxy = None
+            if PROXY_URL:
+                from urllib.parse import urlparse
+                parsed = urlparse(PROXY_URL)
+                pw_proxy = {
+                    "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+                    "username": parsed.username or "",
+                    "password": parsed.password or "",
+                }
+
             browser = await p.chromium.launch(
                 headless=True,
+                proxy=pw_proxy,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-features=IsolateOrigins,site-per-process",

@@ -6,8 +6,11 @@ On passe par le navigateur pour scraper la page de résultats.
 """
 import asyncio
 import json
+import os
 import re
 from datetime import datetime
+
+PROXY_URL = os.getenv("PROXY_URL", "")
 from playwright.async_api import async_playwright
 
 # URL de recherche BienIci filtrée sur le département 36
@@ -19,9 +22,24 @@ async def _scrape_bienici(max_pages: int = 3) -> list[dict]:
     biens = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Parse proxy
+        pw_proxy = None
+        if PROXY_URL:
+            from urllib.parse import urlparse
+            parsed = urlparse(PROXY_URL)
+            pw_proxy = {
+                "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+                "username": parsed.username or "",
+                "password": parsed.password or "",
+            }
+
+        browser = await p.chromium.launch(
+            headless=True,
+            proxy=pw_proxy,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             locale="fr-FR",
             viewport={"width": 1920, "height": 1080},
         )

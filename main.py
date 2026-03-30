@@ -253,6 +253,15 @@ def scrape_all_sources(max_prix: int = 150000, min_surface: int = 50) -> list[di
     except Exception as e:
         print(f"    ✗ Erreur: {e}")
 
+    # BienIci / SeLoger (via Playwright + proxy)
+    print("  [BienIci/SeLoger]...")
+    try:
+        bi = search_bienici(max_prix=max_prix, min_surface=min_surface)
+        all_biens.extend(bi)
+        print(f"    → {len(bi)} annonces")
+    except Exception as e:
+        print(f"    ✗ Erreur: {e}")
+
     # Notaires (immobilier.notaires.fr)
     print("  [Notaires]...")
     try:
