@@ -38,8 +38,10 @@ def _fetch_lbc_page(url: str) -> str | None:
                 "zone": BRIGHTDATA_ZONE,
                 "url": url,
                 "format": "raw",
+                "js_render": True,
+                "wait": 5,
             },
-            timeout=60,
+            timeout=120,
         )
         if resp.status_code == 200:
             return resp.text
@@ -187,6 +189,13 @@ def search_biens(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
     html = _fetch_lbc_page(url)
     if not html:
         return []
+
+    # Debug: check what we got
+    has_next_data = "__NEXT_DATA__" in html
+    has_ads = '"ads"' in html
+    has_list_id = '"list_id"' in html
+    has_aditem = "aditem" in html.lower() or "ad-card" in html.lower()
+    print(f"    HTML size: {len(html)} chars, __NEXT_DATA__: {has_next_data}, ads: {has_ads}, list_id: {has_list_id}, aditem: {has_aditem}")
 
     biens = _parse_lbc_html(html)
     print(f"    Parsed {len(biens)} annonces from page 1")
