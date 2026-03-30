@@ -136,10 +136,35 @@ def resolve_location(bien: dict) -> dict:
 _geo_txn_cache: dict[str, list] = {}
 
 
+def _is_terrain(bien: dict) -> bool:
+    """Détecte si un bien est un terrain (pas une maison/appart)."""
+    # Notaires : type explicite
+    if bien.get("type_bien_code") == "TER":
+        return True
+    # Surface bâti > 400m² sans être un immeuble = probablement terrain
+    surface = bien.get("surface_bati", 0) or 0
+    titre = (bien.get("titre", "") + " " + bien.get("description", "")).lower()
+    if surface > 400 and any(kw in titre for kw in ["terrain", "parcelle", "terre", "bois", "pré", "prairie"]):
+        return True
+    # Surface bâti = surface terrain (pas de bâti réel)
+    if surface > 500 and bien.get("prix", 0) and surface > 0:
+        prix_m2 = bien["prix"] / surface
+        if prix_m2 < 50:  # < 50€/m² = c'est un terrain
+            return True
+    return False
+
+
 def enrich_and_score(bien: dict, use_geo: bool = True) -> dict:
     """Enrichit un bien avec DVF (fin si possible) et calcule le score."""
     # Skip scoring for past auctions (reference only)
     if bien.get("verdict") == "reference_passee":
+        return bien
+
+    # Skip terrains — on cherche du bâti
+    if _is_terrain(bien):
+        bien["verdict"] = "terrain"
+        bien["score_arbitrage"] = 0
+        bien["score_detresse"] = 0
         return bien
 
     code_insee = resolve_code_insee(bien)
