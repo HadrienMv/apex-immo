@@ -56,17 +56,24 @@ def _parse_lbc_html(html: str) -> list[dict]:
     biens = []
 
     # Méthode 1: Extraire depuis __NEXT_DATA__
-    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-    if match:
-        try:
-            next_data = json.loads(match.group(1))
-            ads = _extract_ads_recursive(next_data)
-            for ad in ads:
-                bien = _parse_ad(ad)
-                if bien:
-                    biens.append(bien)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"    __NEXT_DATA__ parse error: {e}")
+    start_marker = '<script id="__NEXT_DATA__" type="application/json">'
+    end_marker = '</script>'
+    start_idx = html.find(start_marker)
+    if start_idx != -1:
+        start_idx += len(start_marker)
+        end_idx = html.find(end_marker, start_idx)
+        if end_idx != -1:
+            json_str = html[start_idx:end_idx]
+            try:
+                next_data = json.loads(json_str)
+                ads = _extract_ads_recursive(next_data)
+                for ad in ads:
+                    bien = _parse_ad(ad)
+                    if bien:
+                        biens.append(bien)
+                print(f"    __NEXT_DATA__: found {len(ads)} ads, parsed {len(biens)} biens")
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"    __NEXT_DATA__ parse error: {e}")
 
     # Méthode 2: Parse le HTML directement
     if not biens:
