@@ -90,35 +90,68 @@ def _parse_seloger_html(html: str) -> list[dict]:
                     except json.JSONDecodeError:
                         continue
 
-    # Méthode 3: DOM parsing
+    # Méthode 3: Parse les liens d'annonces SeLoger + contexte autour
     if not biens:
-        for card in soup.select('[class*="Card"], [class*="listing"], [data-testid*="card"]'):
-            prix_el = card.select_one('[class*="rice"], [data-testid*="price"]')
-            titre_el = card.select_one('[class*="itle"], h2, h3')
-            link = card.select_one('a[href*="/annonce"]')
-            loc_el = card.select_one('[class*="ocation"], [class*="city"]')
+        # Trouver tous les liens d'annonces
+        for link in soup.find_all("a", href=re.compile(r"/annonces/achat/")):
+            href = link.get("href", "")
+            if "depot-annonce" in href:
+                continue
 
-            prix_text = prix_el.get_text(strip=True) if prix_el else ""
-            prix_match = re.search(r"([\d\s\xa0]+)\s*€", prix_text)
-            prix = float(re.sub(r'[^\d]', '', prix_match.group(1))) if prix_match else None
+            # Nettoyer l'URL
+            href = href.split("?")[0] if "?" in href else href
+            if not href.startswith("http"):
+                href = "https://www.seloger.com" + href
 
-            titre = titre_el.get_text(strip=True) if titre_el else ""
-            href = link.get("href", "") if link else ""
-            commune = loc_el.get_text(strip=True) if loc_el else ""
+            # Extraire le texte du bloc parent
+            parent = link.parent
+            for _ in range(5):
+                if parent and parent.parent:
+                    parent = parent.parent
+                    text = parent.get_text(" ", strip=True)
+                    if "€" in text and "m²" in text:
+                        break
 
+            text = parent.get_text(" ", strip=True) if parent else ""
+
+            # Prix
+            prix_match = re.search(r"([\d\s\u202f\xa0]+)\s*€", text)
+            prix = None
+            if prix_match:
+                prix = float(re.sub(r'[^\d]', '', prix_match.group(1)))
+                if prix < 1000:
+                    prix = None
+
+            # Surface
             surface = None
-            surf_match = re.search(r"(\d+)\s*m[²2]", titre + " " + prix_text)
+            surf_match = re.search(r"(\d+)\s*m²", text)
             if surf_match:
                 surface = float(surf_match.group(1))
 
-            if prix and titre:
+            # Commune et quartier depuis l'URL
+            commune = ""
+            quartier = ""
+            url_parts = href.split("/")
+            for part in url_parts:
+                if part.endswith("-36"):
+                    commune = part.replace("-36", "").replace("-", " ").title()
+                elif part not in ["annonces", "achat", "maison", "appartement", "htm", ""]:
+                    quartier = part.replace("-", " ").title()
+
+            # Titre
+            titre_el = link.get_text(strip=True)
+            titre = titre_el if titre_el else f"Bien {commune}"
+
+            if prix:
                 biens.append({
                     "source": "seloger",
-                    "url": href if href.startswith("http") else f"https://www.seloger.com{href}",
+                    "url": href,
                     "titre": titre,
                     "prix": prix,
                     "surface_bati": surface,
                     "commune": commune,
+                    "quartier": quartier,
+                    "code_postal": "",
                     "premiere_vue": datetime.now().isoformat(),
                     "prix_m2": round(prix / surface, 2) if prix and surface and surface > 0 else None,
                 })
