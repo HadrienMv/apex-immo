@@ -100,7 +100,7 @@ def _parse_seloger_html(html: str) -> list[dict]:
 
             prix_text = prix_el.get_text(strip=True) if prix_el else ""
             prix_match = re.search(r"([\d\s\xa0]+)\s*€", prix_text)
-            prix = float(prix_match.group(1).replace(" ", "").replace("\xa0", "")) if prix_match else None
+            prix = float(re.sub(r'[^\d]', '', prix_match.group(1))) if prix_match else None
 
             titre = titre_el.get_text(strip=True) if titre_el else ""
             href = link.get("href", "") if link else ""
