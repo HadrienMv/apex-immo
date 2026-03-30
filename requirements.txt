@@ -1,0 +1,8 @@
+httpx
+beautifulsoup4
+lxml
+pymongo[srv]
+anthropic
+python-dotenv
+schedule
+jinja2
