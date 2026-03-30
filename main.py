@@ -141,15 +141,21 @@ def _is_terrain(bien: dict) -> bool:
     # Notaires : type explicite
     if bien.get("type_bien_code") == "TER":
         return True
-    # Surface bâti > 400m² sans être un immeuble = probablement terrain
-    surface = bien.get("surface_bati", 0) or 0
-    titre = (bien.get("titre", "") + " " + bien.get("description", "")).lower()
-    if surface > 400 and any(kw in titre for kw in ["terrain", "parcelle", "terre", "bois", "pré", "prairie"]):
+    # URL contient /terrain/
+    url = bien.get("url", "").lower()
+    if "/terrain/" in url:
         return True
-    # Surface bâti = surface terrain (pas de bâti réel)
-    if surface > 500 and bien.get("prix", 0) and surface > 0:
-        prix_m2 = bien["prix"] / surface
-        if prix_m2 < 50:  # < 50€/m² = c'est un terrain
+    # Mots-clés terrain dans titre/description
+    titre = (bien.get("titre", "") + " " + bien.get("description", "")).lower()
+    terrain_kw = ["terrain", "parcelle", "terre agricole", "bois", "pré ", "prairie", "terrain constructible", "terrain à bâtir"]
+    if any(kw in titre for kw in terrain_kw) and not any(kw in titre for kw in ["maison", "pavillon", "villa", "appartement"]):
+        return True
+    # Prix/m² < 50€ = terrain (une maison même pourrie c'est > 100€/m²)
+    surface = bien.get("surface_bati", 0) or 0
+    prix = bien.get("prix", 0) or 0
+    if surface > 0 and prix > 0:
+        prix_m2 = prix / surface
+        if prix_m2 < 50:
             return True
     return False
 
