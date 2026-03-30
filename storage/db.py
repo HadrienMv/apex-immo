@@ -5,10 +5,9 @@ from pymongo import MongoClient, DESCENDING
 from datetime import datetime
 import os
 
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb+srv://hadrien:Hadrien123@cluster0.qaa6v36.mongodb.net"
-)
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI environment variable is required. Set it in .env")
 DB_NAME = "apex_scanner"
 
 _client = None
