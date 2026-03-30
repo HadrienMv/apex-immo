@@ -27,28 +27,33 @@ def _fetch_lbc_page(url: str) -> str | None:
         print("    BRIGHTDATA_KEY not set, skipping LBC")
         return None
 
-    try:
-        resp = httpx.post(
-            BRIGHTDATA_API,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BRIGHTDATA_KEY}",
-            },
-            json={
-                "zone": BRIGHTDATA_ZONE,
-                "url": url,
-                "format": "raw",
-            },
-            timeout=60,
-        )
-        if resp.status_code == 200:
-            return resp.text
-        else:
-            print(f"    Bright Data HTTP {resp.status_code}: {resp.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"    Bright Data error: {e}")
-        return None
+    import time
+    for attempt in range(3):
+        try:
+            resp = httpx.post(
+                BRIGHTDATA_API,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {BRIGHTDATA_KEY}",
+                },
+                json={
+                    "zone": BRIGHTDATA_ZONE,
+                    "url": url,
+                    "format": "raw",
+                },
+                timeout=90,
+            )
+            if resp.status_code == 200 and len(resp.text) > 10000:
+                return resp.text
+            elif resp.status_code == 200:
+                print(f"    Bright Data: response too short ({len(resp.text)} chars), retry {attempt+1}/3")
+            else:
+                print(f"    Bright Data HTTP {resp.status_code}, retry {attempt+1}/3")
+        except Exception as e:
+            print(f"    Bright Data error: {e}, retry {attempt+1}/3")
+        if attempt < 2:
+            time.sleep(5)
+    return None
 
 
 def _parse_lbc_html(html: str) -> list[dict]:
