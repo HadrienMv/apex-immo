@@ -202,20 +202,29 @@ def search_distressed(max_prix: int = 300000, min_surface: int = 0) -> list[dict
     """Récupère TOUTES les annonces du 36, le scoring se fait après."""
     all_biens = []
 
-    # Toutes les annonces (47 pages max = ~1650 annonces)
-    for page in range(1, 48):
+    # Paginer (10 pages max, stop après 2 échecs consécutifs)
+    consecutive_fails = 0
+    for page in range(1, 11):
         url = LBC_SEARCH + "&sort=time&order=desc"
         if page > 1:
             url += f"&page={page}"
         print(f"    Fetching LBC page {page}...")
         html = _fetch_lbc_page(url)
         if not html:
-            break
+            consecutive_fails += 1
+            if consecutive_fails >= 2:
+                print(f"    2 échecs consécutifs, arrêt pagination")
+                break
+            continue
         biens = _parse_lbc_html(html)
         if not biens:
-            break
+            consecutive_fails += 1
+            if consecutive_fails >= 2:
+                break
+            continue
+        consecutive_fails = 0
         all_biens.extend(biens)
-        print(f"    +{len(biens)} annonces")
+        print(f"    +{len(biens)} annonces (total: {len(all_biens)})")
 
     # Déduplicate
     seen = set()
