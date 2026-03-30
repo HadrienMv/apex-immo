@@ -32,6 +32,7 @@ def _fetch_lbc_page(url: str) -> str | None:
     import time
     for attempt in range(3):
         try:
+            print(f"      → Request: {url[:80]}... (attempt {attempt+1})")
             resp = httpx.post(
                 BRIGHTDATA_API,
                 headers={
@@ -45,14 +46,17 @@ def _fetch_lbc_page(url: str) -> str | None:
                 },
                 timeout=90,
             )
+            print(f"      ← Status: {resp.status_code}, size: {len(resp.text)} chars")
             if resp.status_code == 200 and len(resp.text) > 10000:
                 return resp.text
-            elif resp.status_code == 200:
-                print(f"    Bright Data: response too short ({len(resp.text)} chars), retry {attempt+1}/3")
-            else:
-                print(f"    Bright Data HTTP {resp.status_code}, retry {attempt+1}/3")
+            elif resp.status_code == 200 and len(resp.text) > 0:
+                # Log what we got back
+                preview = resp.text[:300].replace('\n', ' ')
+                print(f"      ← Response preview: {preview}")
+            elif resp.status_code != 200:
+                print(f"      ← Error body: {resp.text[:300]}")
         except Exception as e:
-            print(f"    Bright Data error: {e}, retry {attempt+1}/3")
+            print(f"      ← Exception: {type(e).__name__}: {e}")
         if attempt < 2:
             time.sleep(5)
     return None
