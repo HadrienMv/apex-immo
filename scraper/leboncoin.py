@@ -18,7 +18,9 @@ BRIGHTDATA_API = "https://api.brightdata.com/request"
 BRIGHTDATA_KEY = os.getenv("BRIGHTDATA_KEY", "")
 BRIGHTDATA_ZONE = os.getenv("BRIGHTDATA_ZONE", "apexlbc")
 
+# Rayon 50km autour de Châteauroux — couvre tout le 36 et déborde sur les départements limitrophes
 LBC_BASE = "https://www.leboncoin.fr/recherche"
+LBC_SEARCH = "https://www.leboncoin.fr/recherche?category=9&locations=Ch%C3%A2teauroux_36000__46.8126_1.69694_5000_50000&real_estate_type=1,2"
 
 
 def _fetch_lbc_page(url: str) -> str | None:
@@ -202,7 +204,7 @@ def search_distressed(max_prix: int = 300000, min_surface: int = 0) -> list[dict
 
     # Toutes les annonces, paginées (5 pages = ~175 annonces)
     for page in range(1, 6):
-        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&sort=time"
+        url = LBC_SEARCH + "&sort=time"
         if page > 1:
             url += f"&page={page}"
         print(f"    Fetching LBC page {page}...")
