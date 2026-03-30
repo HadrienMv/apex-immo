@@ -20,7 +20,7 @@ BRIGHTDATA_ZONE = os.getenv("BRIGHTDATA_ZONE", "apexlbc")
 
 # Rayon 50km autour de Châteauroux — couvre tout le 36 et déborde sur les départements limitrophes
 LBC_BASE = "https://www.leboncoin.fr/recherche"
-LBC_SEARCH = "https://www.leboncoin.fr/recherche?category=9&locations=Ch%C3%A2teauroux_36000__46.8126_1.69694_5000_50000&real_estate_type=1,2"
+LBC_SEARCH = "https://www.leboncoin.fr/recherche?category=9&locations=Ch%C3%A2teauroux_36000__46.8126_1.69694_5000_30000&real_estate_type=1,2&immo_sell_type=old"
 
 
 def _fetch_lbc_page(url: str) -> str | None:
