@@ -191,13 +191,13 @@ def search_biens(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
     return search_distressed(max_prix=max_prix, min_surface=min_surface)
 
 
-def search_distressed(max_prix: int = 150000, min_surface: int = 50) -> list[dict]:
+def search_distressed(max_prix: int = 300000, min_surface: int = 0) -> list[dict]:
     """Récupère TOUTES les annonces du 36, le scoring se fait après."""
     all_biens = []
 
-    # Toutes les annonces, paginées (3 pages max = ~105 annonces)
-    for page in range(1, 4):
-        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&price=min-{max_prix}&square={min_surface}-max&sort=time"
+    # Toutes les annonces, paginées (5 pages = ~175 annonces)
+    for page in range(1, 6):
+        url = f"{LBC_BASE}?category=9&locations=d_36&real_estate_type=1,2&sort=time"
         if page > 1:
             url += f"&page={page}"
         print(f"    Fetching LBC page {page}...")
