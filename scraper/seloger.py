@@ -18,8 +18,14 @@ BRIGHTDATA_API = "https://api.brightdata.com/request"
 BRIGHTDATA_KEY = os.getenv("BRIGHTDATA_KEY", "")
 BRIGHTDATA_ZONE = os.getenv("BRIGHTDATA_ZONE", "apexlbc")
 
-SELOGER_URL = "https://www.seloger.com/list.htm?projects=2&types=1,2&departments=36&sort=d_dt_crea&enterprise=0&qsVersion=1.0&LISTING-LISTpg={page}"
-BIENICI_URL = "https://www.bienici.com/recherche/achat/indre-36/bien-immobilier?prix-max=150000&surface-min=50&page={page}"
+SELOGER_URLS = [
+    "https://www.seloger.com/immobilier/achat/immo-chateauroux-36/bien-maison/",
+    "https://www.seloger.com/immobilier/achat/immo-issoudun-36/bien-maison/",
+    "https://www.seloger.com/immobilier/achat/immo-argenton-sur-creuse-36/bien-maison/",
+    "https://www.seloger.com/immobilier/achat/immo-le-blanc-36/bien-maison/",
+    "https://www.seloger.com/immobilier/achat/immo-la-chatre-36/bien-maison/",
+]
+BIENICI_URL = "https://www.bienici.com/recherche/achat/chateauroux-36000?page={page}"
 
 
 def _fetch_page(url: str) -> str | None:
@@ -40,7 +46,7 @@ def _fetch_page(url: str) -> str | None:
                 "url": url,
                 "format": "raw",
             },
-            timeout=60,
+            timeout=120,
         )
         if resp.status_code == 200:
             return resp.text
@@ -177,36 +183,34 @@ def _find_cards_recursive(obj) -> list[dict]:
 
 
 def search_all_pages(max_prix: int = 150000, min_surface: int = 50, max_pages: int = 3) -> list[dict]:
-    """Scrape SeLoger via Bright Data, 3 pages."""
+    """Scrape SeLoger par ville via Bright Data, puis BienIci en fallback."""
     all_biens = []
 
-    for page in range(1, max_pages + 1):
-        url = SELOGER_URL.format(page=page)
-        print(f"    SeLoger page {page}...")
+    # SeLoger par ville (URLs plus légères que la recherche département)
+    for url in SELOGER_URLS:
+        ville = url.split("immo-")[1].split("-36")[0] if "immo-" in url else "?"
+        print(f"    SeLoger {ville}...")
         html = _fetch_page(url)
         if not html:
-            break
-
-        # Debug
-        if page == 1:
-            has_price = '"price"' in html
-            has_area = '"livingArea"' in html or '"surfaceArea"' in html
-            print(f"    HTML: {len(html)} chars, price: {has_price}, area: {has_area}")
+            continue
 
         biens = _parse_seloger_html(html)
-        if not biens:
-            # Try BienIci as fallback
-            print(f"    SeLoger vide, essai BienIci...")
-            url_bi = BIENICI_URL.format(page=page)
-            html_bi = _fetch_page(url_bi)
-            if html_bi:
-                biens = _parse_bienici_html(html_bi)
-
         all_biens.extend(biens)
         print(f"    +{len(biens)} annonces")
 
-        if not biens:
-            break
+    # BienIci en fallback si SeLoger n'a rien donné
+    if not all_biens:
+        for page in range(1, max_pages + 1):
+            url_bi = BIENICI_URL.format(page=page)
+            print(f"    BienIci page {page}...")
+            html_bi = _fetch_page(url_bi)
+            if not html_bi:
+                break
+            biens = _parse_bienici_html(html_bi)
+            all_biens.extend(biens)
+            print(f"    +{len(biens)} annonces")
+            if not biens:
+                break
 
     # Déduplicate
     seen = set()
