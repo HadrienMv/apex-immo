@@ -244,23 +244,14 @@ def scrape_all_sources(max_prix: int = 150000, min_surface: int = 50) -> list[di
     """Scrape toutes les sources et déduplique."""
     all_biens = []
 
-    # LeBonCoin (nécessite proxy/EC2 — désactivé en local)
-    # print("  [LeBonCoin]...")
-    # try:
-    #     lbc = search_distressed(max_prix=max_prix, min_surface=min_surface)
-    #     all_biens.extend(lbc)
-    #     print(f"    → {len(lbc)} annonces")
-    # except Exception as e:
-    #     print(f"    ✗ Erreur: {e}")
-
-    # BienIci (nécessite proxy/EC2 — désactivé en local)
-    # print("  [BienIci/SeLoger]...")
-    # try:
-    #     bi = search_bienici(max_prix=max_prix, min_surface=min_surface)
-    #     all_biens.extend(bi)
-    #     print(f"    → {len(bi)} annonces")
-    # except Exception as e:
-    #     print(f"    ✗ Erreur: {e}")
+    # LeBonCoin (multi-stratégie: curl_cffi → Playwright → Google)
+    print("  [LeBonCoin]...")
+    try:
+        lbc = search_distressed(max_prix=max_prix, min_surface=min_surface)
+        all_biens.extend(lbc)
+        print(f"    → {len(lbc)} annonces")
+    except Exception as e:
+        print(f"    ✗ Erreur: {e}")
 
     # Notaires (immobilier.notaires.fr)
     print("  [Notaires]...")
@@ -424,9 +415,16 @@ if __name__ == "__main__":
         elif cmd == "summary":
             print_summary()
         elif cmd == "fast":
-            # Pipeline sans geo (plus rapide)
             run_pipeline(use_geo=False)
+        elif cmd == "digest":
+            from notifier.digest import send_digest
+            send_digest()
+        elif cmd == "cron":
+            # Pipeline + digest — pour le crontab
+            run_pipeline(use_geo=True)
+            from notifier.digest import send_digest
+            send_digest()
         else:
-            print(f"Usage: python main.py [dvf|check|summary|fast]")
+            print(f"Usage: python main.py [dvf|check|summary|fast|digest|cron]")
     else:
         run_pipeline(use_geo=True)

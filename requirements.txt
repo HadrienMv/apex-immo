@@ -6,3 +6,5 @@ anthropic
 python-dotenv
 schedule
 jinja2
+curl_cffi
+playwright
